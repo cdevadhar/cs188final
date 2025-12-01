@@ -144,6 +144,7 @@ def start_retargeting(queue: multiprocessing.Queue, robot_dir: str, config_path:
 
     # [WRIST PATCH] Save initial robot pose (position+rotation) for wrist rotation blending
     base_robot_pose = robot.get_pose()
+    base_pos = base_robot_pose.p.copy()
     calib_wrist_R = [None]  # Store first detected wrist orientation for calibration
 
     # Mapping from retargeting joint order to SAPIEN joint order
