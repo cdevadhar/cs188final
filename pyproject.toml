@@ -41,7 +41,7 @@ example = [
     "tyro",
     "tqdm",
     "opencv-python",
-    "mediapipe",
+    "mediapipe<=0.10.21",
     "sapien==3.0.0b0",
     "loguru",
 ]

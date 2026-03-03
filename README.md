@@ -43,7 +43,7 @@ pip install dex_retargeting
 To run the example, you may need additional dependencies for rendering and hand pose detection.
 
 ```shell
-git clone https://github.com/dexsuite/dex-retargeting
+git clone https://github.com/dexsuite/dex-retargeting --recursive
 cd dex-retargeting
 pip install -e ".[example]"
 ```
