@@ -1,5 +1,4 @@
 import mediapipe as mp
-import mediapipe.framework as framework
 import numpy as np
 from mediapipe.framework.formats import landmark_pb2
 from mediapipe.python.solutions import hands_connections
@@ -107,7 +106,7 @@ class SingleHandDetector:
 
     @staticmethod
     def parse_keypoint_3d(
-        keypoint_3d: framework.formats.landmark_pb2.LandmarkList,
+        keypoint_3d: landmark_pb2.LandmarkList,
     ) -> np.ndarray:
         keypoint = np.empty([21, 3])
         for i in range(21):

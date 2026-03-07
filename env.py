@@ -7,7 +7,7 @@ from dex_retargeting.constants import HandType
 from example.vector_retargeting.single_hand_detector import SingleHandDetector
 
 class PDController:
-    def __init__(self, kp, kd, target):
+    def __init__(self, kp, kd, target=None):
         """
         Initialize a proportional controller.
 
@@ -28,6 +28,7 @@ class PDController:
             target (tuple or array, optional): New target position.
         """
         self.lasterr = np.array([0,0,0])
+        self.target = target
 
     
     def update(self, current_pos):
@@ -48,16 +49,22 @@ class PDController:
 # ----------------------------
 # Shared state
 # ----------------------------
-latest_action = np.zeros(7)
 pd = PDController(kp=5.0, kd=0.5, target=np.zeros(3))
-action_lock = threading.Lock()
+data_lock = threading.Lock()
 stop_event = threading.Event()
 
+hand_start = None
+robot_start = None
+latest_hand_pos = None
+hand_open = 0
+min_dist = 0.02
+max_dist = 0.15
+
 # ----------------------------
-# Background thread: webcam + hand detection only
+# Background thread: webcam + hand detection only (doesn't handle actions)
 # ----------------------------
 def webcam_thread_fn():
-    global latest_action
+    global latest_hand_pos, hand_open
 
     hand_type = HandType.right
     detector = SingleHandDetector(
@@ -72,7 +79,6 @@ def webcam_thread_fn():
         return
 
     scale = 0.5
-
     while cap.isOpened() and not stop_event.is_set():
         ret, frame = cap.read()
         if not ret:
@@ -82,35 +88,32 @@ def webcam_thread_fn():
         rgb = frame[..., ::-1]
 
         _, joint_pos, keypoint_2d, wrist_rot, wrist_pos = detector.detect(rgb)
-
         if keypoint_2d is not None:
             frame = detector.draw_skeleton_on_image(frame, keypoint_2d, style="default")
 
-        action = np.zeros(7)
-        pd = PDController(kp=1.8, kd=0.4, target=wrist_pos)
         if joint_pos is not None and wrist_pos is not None:
-            wrist = np.array([float(wrist_pos[0]), float(wrist_pos[1]), float(wrist_pos[2])]) * scale
-            pd.target = wrist
-            control = pd.update(np.zeros(3))  # no feedback, just smooth the hand motion
-            action[0] = control[0]
-            action[1] = control[1]
-            action[2] = control[2]
+            wrist = np.array([float(wrist_pos[0]), float(wrist_pos[1]), float(wrist_pos[2])])
             cv2.putText(frame, f"Wrist: {wrist_pos.round(2)}", (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            
+            thumb_tip = joint_pos[4]
+            pinky_tip = joint_pos[20]
+            # print(joint_pos)
+            # distance between thumb and pinky → 0 (closed) to 1 (open)
+            hand_dist_unnorm = np.linalg.norm(thumb_tip - pinky_tip)
+            hand_dist = np.clip(hand_dist_unnorm, min_dist, max_dist)
+
+            hand_open = (hand_dist - min_dist) / (max_dist - min_dist)
+
+            hand_open = 1-np.clip(hand_open * 1.0, 0, 1)
+            print(hand_open)
+            with data_lock:
+                latest_hand_pos = wrist
         else:
-            cv2.putText(frame, "No hand detected", (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                cv2.putText(frame, "No hand detected", (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
-        with action_lock:
-            latest_action = action
-
-        # NOTE: cv2.imshow MUST be called from the same thread it was first called in.
-        # On macOS with mjpython, safest to just print/log — skip imshow here.
-        # If you want the webcam window, uncomment below (may crash on macOS):
-        # cv2.imshow("Hand Teleop", frame)
-        # if cv2.waitKey(1) & 0xFF == ord("q"):
-        #     stop_event.set()
-        #     break
+        
 
     cap.release()
     cv2.destroyAllWindows()
@@ -122,25 +125,48 @@ def webcam_thread_fn():
 env = suite.make(
     env_name="NutAssembly",
     robots="Panda",
-    
+    gripper_types="InspireRightHand",
     has_renderer=True,
     has_offscreen_renderer=False,
     use_camera_obs=False,
     ignore_done=True,
+    camera_names="birdview"
 )
-env.reset()
+obs = env.reset()
 
 # Start webcam detection in background
 cam_thread = threading.Thread(target=webcam_thread_fn, daemon=True)
 cam_thread.start()
 
 print("Live teleoperation started. Press Ctrl+C to quit.\n")
-
+# print(env.robots[0].gripper['right'].joints)
+scale = 4.0
 try:
     while not stop_event.is_set():
-        with action_lock:
-            action = latest_action.copy()
+        with data_lock:
+            hand_pos = None if latest_hand_pos is None else latest_hand_pos.copy()
+        robot_pos = obs["robot0_eef_pos"]
+        if hand_pos is not None and hand_start is None:
+            hand_start = hand_pos.copy()
+            robot_start = robot_pos.copy()
+        action = np.zeros(12)
 
+        if hand_pos is not None and hand_start is not None:
+            hand_delta = hand_pos - hand_start
+            hand_delta_robot = np.array([
+                hand_delta[2],
+                -hand_delta[0],
+                hand_delta[1]
+            ])
+            robot_target = robot_start + scale * hand_delta_robot
+
+            pd.target = robot_target
+            control = pd.update(robot_pos)
+
+            action[:3] = control
+
+            # map to gripper action (assuming 0=closed, 1=open)
+            action[6:] = hand_open
         obs, reward, done, info = env.step(action)
         env.render()  # OpenGL render stays on main thread
 
