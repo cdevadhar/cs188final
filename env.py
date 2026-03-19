@@ -227,7 +227,7 @@ env = suite.make(
     camera_names="birdview"
 )
 obs = env.reset()
-
+env.viewer.set_camera(0)
 # Start webcam detection in background
 cam_thread = threading.Thread(target=webcam_thread_fn, daemon=True)
 cam_thread.start()
@@ -236,6 +236,9 @@ print("Live teleoperation started. Press Ctrl+C to quit.\n")
 try:
     detected_hands = 0
     locked_state = None
+    pickup_state = None
+    pickup_hold = 0
+    holding = False
     while not stop_event.is_set():
         with data_lock:
             hand_pos = None if latest_hand_pos is None else latest_hand_pos.copy()
@@ -255,60 +258,99 @@ try:
             # y range is about 0.9 to 1.4
             # z stable range is about 0.05 (back) to 0.25 (front) on camera, -0.2 to 0.2 for robot
 
-            milk_pos = obs['Milk_pos']
-            milk_pos[2] += 0.3
 
-            cereal_pos = obs["Cereal_pos"]
-            cereal_pos[2] += 0.3
+            milk_pos = obs['Milk_pos'].copy()
+            # milk_pos[0]+=0.01
+            if not pickup_state:
+                milk_pos[2] += 0.3
+            else:
+                milk_pos[2] += 0.1
 
-            bread_pos = obs["Bread_pos"]
-            bread_pos[2] += 0.3
+            cereal_pos = obs["Cereal_pos"].copy()
+            # cereal_pos[0]+=0.01
+            if not pickup_state:
+                cereal_pos[2] += 0.3
+            else:
+                cereal_pos[2] += 0.1
 
-            can_pos = obs["Can_pos"]
-            can_pos[2] += 0.3
+            bread_pos = obs["Bread_pos"].copy()
+            # bread_pos[0]+=0.01
+            if not pickup_state:
+                bread_pos[2] += 0.3
+            else:
+                bread_pos[2] += 0.1
+
+            can_pos = obs["Can_pos"].copy()
+            # can_pos[0]+=0.01
+            if not pickup_state:
+                can_pos[2] += 0.3
+            else:
+                can_pos[2] += 0.1
+
+            milk_distance = np.linalg.norm(robot_pos-milk_pos)
+            cereal_distance = np.linalg.norm(robot_pos-cereal_pos)
+            bread_distance = np.linalg.norm(robot_pos-bread_pos)
+            can_distance = np.linalg.norm(robot_pos-can_pos)
 
             if locked_state=="Milk":
+                print(milk_distance)
                 pd.target = milk_pos
+                if pickup_state==1 and milk_distance<0.07:
+                    pickup_state = 2
             
             elif locked_state=="Cereal":
+                print(cereal_distance)
                 pd.target = cereal_pos
+                if pickup_state==1 and cereal_distance<0.07:
+                    pickup_state = 2
             
             elif locked_state=="Bread":
                 pd.target = bread_pos
+                print(bread_distance)
+                if pickup_state==1 and bread_distance<0.07:
+                    pickup_state = 2
 
             elif locked_state=="Can":
                 pd.target = can_pos
+                print(can_distance)
+                if pickup_state==1 and can_distance<0.07:
+                    pickup_state = 2
 
             else:
                 pd.target = [(hand_pos[2]-0.05)*3 -0.3, (hand_pos[0]-0.2)/0.6-0.5, (1-hand_pos[1])/2 + 0.9]
-
-            milk_distance = np.linalg.norm(pd.target-milk_pos)
-            cereal_distance = np.linalg.norm(pd.target-cereal_pos)
-            bread_distance = np.linalg.norm(pd.target-bread_pos)
-            can_distance = np.linalg.norm(pd.target-can_pos)
-
-            print([milk_distance, cereal_distance, bread_distance, can_distance])
-            if milk_distance<.2 and locked_state==None:
-                locked_state = "Milk"
-                print("LOCKED ONTO MILK")
-
-            elif cereal_distance<.2 and locked_state==None:
-                locked_state = "Cereal"
-                print("LOCKED ONTO CEREAL")
             
-            elif bread_distance<.2 and locked_state==None:
-                locked_state = "Bread"
-                print("LOCKED ONTO BREAD")
-            
-            elif can_distance<.2 and locked_state==None:
-                locked_state = "Can"
-                print("LOCKED ONTO CAN")
+
+            # print([milk_distance, cereal_distance, bread_distance, can_distance])
+            if not holding:
+                if milk_distance<.15 and locked_state==None:
+                    locked_state = "Milk"
+                    print("LOCKED ONTO MILK")
+
+                elif cereal_distance<.15 and locked_state==None:
+                    locked_state = "Cereal"
+                    print("LOCKED ONTO CEREAL")
+                
+                elif bread_distance<.15 and locked_state==None:
+                    locked_state = "Bread"
+                    print("LOCKED ONTO BREAD")
+                
+                elif can_distance<.15 and locked_state==None:
+                    locked_state = "Can"
+                    print("LOCKED ONTO CAN")
             
             # pd.target = [robot_pos[0]-0.1, robot_pos[1], robot_pos[2]]
             control = pd.update(robot_pos)
 
             action[:3] = control
 
+            if pickup_state==2:
+                pickup_hold+=1
+            
+            if pickup_hold>50:
+                locked_state = None
+                pickup_state = None
+                pickup_hold = 0
+                holding = True
             # map to gripper action (assuming 0=closed, 1=open)
             if USE_INDIVIDUAL_FINGERS: 
                 action[6] = open_hand[0] + _pinky_open  * (close_hand[0] - open_hand[0])
@@ -317,8 +359,14 @@ try:
                 action[9] = open_hand[3] + _index_open  * (close_hand[3] - open_hand[3])
                 action[10] = open_hand[4] + _thumb_open   * (close_hand[4] - open_hand[4])
             else:   
-                #map to all fingers at once 
-                action[6:] = open_hand + hand_open * (close_hand - open_hand)  
+                #map to all fingers at once
+                if locked_state and not pickup_state and hand_open>0.5:
+                    pickup_state = 1
+                    action[6:] = open_hand
+                elif locked_state and not pickup_state==2:
+                    action[6:] = open_hand
+                elif not locked_state or (locked_state and pickup_state==2):
+                    action[6:] = open_hand + hand_open * (close_hand - open_hand) * 0.5
             if wrist_frame is not None:
                 #wrist orientation
                 robot_world_mat = MP_TO_ROBOT @ wrist_frame
