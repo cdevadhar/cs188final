@@ -40,12 +40,14 @@ const ProjectPage: React.FC = () => {
 
         {/* --- VIDEO DEMO SECTION (The 3% Component) --- */}
         <section style={sectionStyle}>
-          <h3 style={sectionTitleStyle}>Solution in Action</h3>
-          <div style={videoPlaceholderStyle}>
-            <div style={playIconStyle}>▶</div>
-            <p><strong>[Video Demo Placeholder]</strong></p>
-            <p style={{fontSize: '0.9rem'}}>Upload your video showing the Door Opening and Pick-and-Place tasks here.</p>
-          </div>
+        <h3 style={{ textAlign: "center", fontSize: "1.8rem", fontWeight:"700" }}>Keyboard Teleop vs. Manual Teleop  </h3>
+              <video
+                controls
+                style={{ width: '100%', borderRadius: '8px' }}
+              >
+                <source src="/cs188final/timeComparison.mp4" type="video/mp4" />
+                Your browser does not support the video tag.
+              </video>
         </section>
 
         {/* --- METHODOLOGY SECTION --- */}
